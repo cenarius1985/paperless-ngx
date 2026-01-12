@@ -185,8 +185,34 @@ class Coordinator:
 
         print("Variables de entorno actualizadas.")
 
+    def fix_windows_compatibility(self):
+        """Convierte finales de línea CRLF a LF en scripts de docker/rootfs."""
+        print("Corrigiendo finales de línea para compatibilidad con Linux...")
+        rootfs_dir = os.path.join(self.root_dir, "docker", "rootfs")
+        count = 0
+        for root, dirs, files in os.walk(rootfs_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                # Detectar si es texto/script
+                try:
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+
+                    if b'\r\n' in content:
+                        content = content.replace(b'\r\n', b'\n')
+                        with open(file_path, 'wb') as f:
+                            f.write(content)
+                        count += 1
+                        # print(f"Corregido: {file}")
+                except Exception as e:
+                    pass
+        print(f"Se corrigieron finales de línea en {count} archivos.")
+
     def build(self):
         """Construye los contenedores."""
+        if self.is_windows:
+            self.fix_windows_compatibility()
+
         print("\n--- Construyendo Contenedores ---")
         self.run_command(["docker", "compose", "build"])
 

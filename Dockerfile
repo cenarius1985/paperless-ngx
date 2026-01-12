@@ -237,7 +237,7 @@ RUN set -eux \
   && echo "Collecting static files" \
     && s6-setuidgid paperless python3 manage.py collectstatic --clear --no-input --link \
     && s6-setuidgid paperless python3 manage.py compilemessages \
-    && /usr/local/bin/deduplicate.py --verbose /usr/src/paperless/static/
+    && python3 /usr/local/bin/deduplicate.py --verbose /usr/src/paperless/static/
 
 VOLUME ["/usr/src/paperless/data", \
         "/usr/src/paperless/media", \
