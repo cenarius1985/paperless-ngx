@@ -89,7 +89,7 @@ def update_document_note(doc_id, note_content):
         })
 
         with urllib.request.urlopen(req) as response:
-            if response.status == 201:
+            if response.status in [200, 201]:
                 log("✅ Resumen guardado exitosamente como nota en el documento.")
             else:
                 log(f"⚠️ Error al guardar nota. Estado: {response.status}")
