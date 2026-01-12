@@ -160,7 +160,7 @@ class Coordinator:
         url = input("URL de acceso (ej. https://paperless.local) [dejar vacío si es local]: ")
         secret_key = self.generate_secret_key()
         timezone = input("Zona horaria (ej. America/Santiago) [America/Santiago]: ") or "America/Santiago"
-        lang = input("Idioma OCR (ej. es, eng) [eng]: ") or "eng"
+        lang = input("Idioma OCR (ej. spa, eng) [spa]: ") or "spa"
 
         configured_keys = set()
 
@@ -186,27 +186,131 @@ class Coordinator:
         print("Variables de entorno actualizadas.")
 
     def fix_windows_compatibility(self):
-        """Convierte finales de línea CRLF a LF en scripts de docker/rootfs."""
+        """Convierte finales de línea CRLF a LF en scripts de docker/rootfs y custom_scripts."""
         print("Corrigiendo finales de línea para compatibilidad con Linux...")
-        rootfs_dir = os.path.join(self.root_dir, "docker", "rootfs")
-        count = 0
-        for root, dirs, files in os.walk(rootfs_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                # Detectar si es texto/script
-                try:
-                    with open(file_path, 'rb') as f:
-                        content = f.read()
 
-                    if b'\r\n' in content:
-                        content = content.replace(b'\r\n', b'\n')
-                        with open(file_path, 'wb') as f:
-                            f.write(content)
-                        count += 1
-                        # print(f"Corregido: {file}")
-                except Exception as e:
-                    pass
-        print(f"Se corrigieron finales de línea en {count} archivos.")
+        paths_to_fix = [
+            os.path.join(self.root_dir, "docker", "rootfs"),
+            os.path.join(self.root_dir, "custom_scripts")
+        ]
+
+        count = 0
+        for base_path in paths_to_fix:
+            if not os.path.exists(base_path):
+                continue
+
+            for root, dirs, files in os.walk(base_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Detectar si es texto/script
+                    try:
+                        with open(file_path, 'rb') as f:
+                            content = f.read()
+
+                        if b'\r\n' in content:
+                            content = content.replace(b'\r\n', b'\n')
+                            with open(file_path, 'wb') as f:
+                                f.write(content)
+                            count += 1
+                    except Exception as e:
+                        pass
+        print(f"Se corregieron finales de línea en {count} archivos.")
+
+    def setup_llm(self):
+        """Configura la integración con LLM (Ollama)."""
+        print("\n--- Configuración LLM ---")
+        scripts_dir = os.path.join(self.root_dir, "custom_scripts")
+        script_path = os.path.join(scripts_dir, "llm_processor.py")
+
+        if not os.path.exists(scripts_dir):
+            os.makedirs(scripts_dir)
+            print(f"Directorio creado: {scripts_dir}")
+
+        # Contenido del script llm_processor.py
+        script_content = '''#!/usr/bin/env python3
+import os
+import sys
+import json
+import urllib.request
+
+# Configuración desde variables de entorno
+OLLAMA_HOST = os.environ.get("PAPERLESS_LLM_HOST", "http://host.docker.internal:4686")
+OLLAMA_MODEL = os.environ.get("PAPERLESS_LLM_MODEL", "deepseek-r1:8b")
+API_URL = f"{OLLAMA_HOST}/api/generate"
+
+def log(message):
+    print(f"[LLM Processor] {message}")
+
+def call_ollama(prompt):
+    """Llama a la API de Ollama."""
+    data = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False
+    }
+
+    try:
+        json_data = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(API_URL, data=json_data, headers={'Content-Type': 'application/json'})
+
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return result.get("response", "")
+
+    except Exception as e:
+        log(f"Error conectando a Ollama ({API_URL}): {e}")
+        return None
+
+def main():
+    """
+    Script de post-consumo para Paperless-ngx.
+    """
+    try:
+        document_id = os.environ.get("DOCUMENT_ID")
+        file_name = os.environ.get("DOCUMENT_FILE_NAME")
+
+        log(f"Iniciando procesamiento para Doc ID: {document_id}, Archivo: {file_name}")
+        log(f"Usando LLM: {OLLAMA_MODEL} en {OLLAMA_HOST}")
+
+        prompt = f"""
+        Actúa como un experto en gestión documental del sistema de salud público de Chile (GES/AUGE, Oncología).
+        Analiza el siguiente nombre de archivo: "{file_name}"
+
+        Tipos de documentos comunes:
+        - Administrativos: Oficio, Ordinario, Circular, Memo, Correo Electrónico.
+        - Normativos: Ley, Decreto, Resolución, Reglamento.
+        - Gestión: Modelo de Gestión, Protocolo, Convenio, Programación.
+        - Clínicos: Interconsulta, Informe Paciente, Comité Oncológico.
+
+        Tu tarea:
+        1. Identificar el Tipo de documento más adecuado basándote en el nombre.
+        2. Generar un resumen ejecutivo de 1 línea.
+
+        Responde estrictamente con el formato: Tipo: [Tipo] | Resumen: [Resumen]
+        """
+
+        response = call_ollama(prompt)
+
+        if response:
+            log(f"Análisis LLM: {response}")
+            # Aquí podríamos usar la API de Paperless para guardar este resumen en una nota.
+        else:
+            log("No se recibió respuesta del LLM.")
+
+    except Exception as e:
+        log(f"Error crítico: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+'''
+        # Siempre sobrescribimos para asegurar que esté actualizado
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(script_content)
+
+        print(f"Script creado/actualizado: {script_path}")
+        print("El script está configurado para conectar a tu Ollama local.")
+        print("\nRecuerda ejecutar 'Construir (Build)' para aplicar correcciones de formato.")
 
     def build(self):
         """Construye los contenedores."""
@@ -260,7 +364,8 @@ class Coordinator:
             print("5. Actualizar (Git Pull + Build + Up)")
             print("6. Crear Superusuario")
             print("7. Ver Logs")
-            print("8. Salir")
+            print("8. Configurar LLM (Crear scripts)")
+            print("9. Salir")
 
             opcion = input("Selecciona una opción: ")
 
@@ -279,6 +384,8 @@ class Coordinator:
             elif opcion == "7":
                 self.show_logs()
             elif opcion == "8":
+                self.setup_llm()
+            elif opcion == "9":
                 print("¡Hasta luego!")
                 sys.exit(0)
             else:
