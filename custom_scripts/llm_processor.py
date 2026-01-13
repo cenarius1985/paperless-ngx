@@ -54,11 +54,11 @@ def get_document_content(file_path):
         else:
             # Intentar leer como texto plano
             with open(file_path, 'r', errors='ignore') as f:
-                text = f.read(2000) # Primeros 2000 chars
+                text = f.read(4000) # Primeros 4000 chars
     except Exception as e:
         log(f"No se pudo extraer texto del archivo: {e}")
 
-    return text.strip()[:2000]
+    return text.strip()[:4000]
 
 def update_document_note(doc_id, note_content):
     """Añade una nota al documento usando la API de Paperless."""
