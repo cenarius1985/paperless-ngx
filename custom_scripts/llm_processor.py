@@ -54,11 +54,116 @@ def get_document_content(file_path):
         else:
             # Intentar leer como texto plano
             with open(file_path, 'r', errors='ignore') as f:
-                text = f.read(4000) # Primeros 4000 chars
+                text = f.read(8000) # Primeros 8000 chars
     except Exception as e:
         log(f"No se pudo extraer texto del archivo: {e}")
 
-    return text.strip()[:4000]
+    return text.strip()[:8000]
+
+def get_existing_tags(token):
+    """Obtiene todas las etiquetas existentes de Paperless."""
+    api_endpoint = f"{PAPERLESS_URL}/api/tags/?page_size=1000"
+    tags = {}
+
+    try:
+        req = urllib.request.Request(api_endpoint, headers={
+            'Authorization': f'Token {token}'
+        })
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                results = data.get('results', [])
+                for tag in results:
+                    tags[tag['name'].lower()] = tag['id']
+    except Exception as e:
+        log(f"Error obteniendo etiquetas: {e}")
+
+    return tags
+
+def create_tag(token, tag_name):
+    """Crea una nueva etiqueta en Paperless."""
+    api_endpoint = f"{PAPERLESS_URL}/api/tags/"
+    data = {
+        "name": tag_name,
+        "color": "#c0c0c0", # Default color
+        "matching_algorithm": 0 # None
+    }
+
+    try:
+        json_data = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(api_endpoint, data=json_data, headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Token {token}'
+        })
+        with urllib.request.urlopen(req) as response:
+            if response.status == 201:
+                new_tag = json.loads(response.read().decode("utf-8"))
+                return new_tag['id']
+    except Exception as e:
+        log(f"Error creando etiqueta '{tag_name}': {e}")
+
+    return None
+
+def update_document_tags(doc_id, tag_names):
+    """Asigna etiquetas al documento, creándolas si no existen."""
+    token = os.environ.get("PAPERLESS_API_TOKEN")
+    if not token:
+        log("ADVERTENCIA: No hay token, no se pueden actualizar etiquetas.")
+        return
+
+    existing_tags_map = get_existing_tags(token)
+    tag_ids_to_assign = []
+
+    for name in tag_names:
+        clean_name = name.strip()
+        if not clean_name:
+            continue
+
+        lower_name = clean_name.lower()
+        if lower_name in existing_tags_map:
+            tag_ids_to_assign.append(existing_tags_map[lower_name])
+        else:
+            log(f"Creando nueva etiqueta: {clean_name}")
+            new_id = create_tag(token, clean_name)
+            if new_id:
+                tag_ids_to_assign.append(new_id)
+
+    if not tag_ids_to_assign:
+        return
+
+    # Obtener etiquetas actuales del documento para no borrarlas
+    current_tags = []
+    try:
+        doc_url = f"{PAPERLESS_URL}/api/documents/{doc_id}/"
+        req = urllib.request.Request(doc_url, headers={'Authorization': f'Token {token}'})
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                doc_data = json.loads(response.read().decode("utf-8"))
+                current_tags = doc_data.get('tags', [])
+    except Exception as e:
+        log(f"Error obteniendo documento {doc_id}: {e}")
+        return
+
+    # Combinar y eliminar duplicados
+    updated_tags = list(set(current_tags + tag_ids_to_assign))
+
+    api_endpoint = f"{PAPERLESS_URL}/api/documents/{doc_id}/"
+    data = {"tags": updated_tags}
+
+    try:
+        json_data = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(api_endpoint, data=json_data, headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Token {token}'
+        }, method='PATCH')
+
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                log(f"✅ Etiquetas actualizadas: {tag_names}")
+            else:
+                log(f"⚠️ Error actualizando etiquetas. Estado: {response.status}")
+    except Exception as e:
+        log(f"Error actualizando etiquetas en API: {e}")
 
 def update_document_note(doc_id, note_content):
     """Añade una nota al documento usando la API de Paperless."""
@@ -120,11 +225,13 @@ def main():
 
         Tarea:
         1. Clasificar el Tipo de documento.
-        2. Generar un resumen ejecutivo conciso.
+        2. Generar un resumen ejecutivo detallado (3-5 líneas) que capture los puntos clave, fechas importantes y acciones requeridas.
+        3. Sugerir 3-5 etiquetas relevantes (palabras clave).
 
         Responde SOLO con el siguiente formato:
         Tipo: [Tipo Detectado]
-        Resumen: [Resumen de 1-2 líneas]
+        Resumen: [Resumen detallado]
+        Etiquetas: [Etiqueta1, Etiqueta2, Etiqueta3]
         """
 
         response = call_ollama(prompt)
@@ -135,8 +242,18 @@ def main():
 
             log(f"Análisis LLM: {clean_response}")
 
+            # Extraer etiquetas
+            tags = []
+            tags_match = re.search(r'Etiquetas:\s*\[(.*?)\]', clean_response, re.IGNORECASE)
+            if tags_match:
+                tags_str = tags_match.group(1)
+                tags = [t.strip() for t in tags_str.split(',') if t.strip()]
+
             # Guardar en Paperless
             update_document_note(document_id, clean_response)
+
+            if tags:
+                update_document_tags(document_id, tags)
 
         else:
             log("No se recibió respuesta del LLM.")
